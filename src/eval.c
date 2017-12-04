@@ -59,20 +59,6 @@ static inline void print_parsed_as_constant(BUFFER *out, calculated_number n);
 // ----------------------------------------------------------------------------
 // evaluation of expressions
 
-static inline calculated_number eval_check_number(calculated_number n, int *error) {
-    if(unlikely(isnan(n))) {
-        *error = EVAL_ERROR_VALUE_IS_NAN;
-        return 0;
-    }
-
-    if(unlikely(isinf(n))) {
-        *error = EVAL_ERROR_VALUE_IS_INFINITE;
-        return 0;
-    }
-
-    return n;
-}
-
 static inline calculated_number eval_variable(EVAL_EXPRESSION *exp, EVAL_VARIABLE *v, int *error) {
     static uint32_t this_hash = 0, now_hash = 0, after_hash = 0, before_hash = 0, status_hash = 0, removed_hash = 0, uninitialized_hash = 0, undefined_hash = 0, clear_hash = 0, warning_hash = 0, critical_hash = 0;
     calculated_number n;
@@ -116,7 +102,7 @@ static inline calculated_number eval_variable(EVAL_EXPRESSION *exp, EVAL_VARIABL
     }
 
     if(unlikely(v->hash == now_hash && !strcmp(v->name, "now"))) {
-        n = time(NULL);
+        n = now_realtime_sec();
         buffer_strcat(exp->error_msg, "[ $now = ");
         print_parsed_as_constant(exp->error_msg, n);
         buffer_strcat(exp->error_msg, " ] ");
@@ -180,14 +166,14 @@ static inline calculated_number eval_variable(EVAL_EXPRESSION *exp, EVAL_VARIABL
     }
 
     if(exp->rrdcalc && health_variable_lookup(v->name, v->hash, exp->rrdcalc, &n)) {
-        buffer_sprintf(exp->error_msg, "[ $%s = ", v->name);
+        buffer_sprintf(exp->error_msg, "[ ${%s} = ", v->name);
         print_parsed_as_constant(exp->error_msg, n);
         buffer_strcat(exp->error_msg, " ] ");
         return n;
     }
 
     *error = EVAL_ERROR_UNKNOWN_VARIABLE;
-    buffer_sprintf(exp->error_msg, "unknown variable '%s'", v->name);
+    buffer_sprintf(exp->error_msg, "[ undefined variable '%s' ] ", v->name);
     return 0;
 }
 
@@ -213,7 +199,6 @@ static inline calculated_number eval_value(EVAL_EXPRESSION *exp, EVAL_VALUE *v, 
             break;
     }
 
-    // return eval_check_number(n, error);
     return n;
 }
 
@@ -247,7 +232,7 @@ calculated_number eval_equal(EVAL_EXPRESSION *exp, EVAL_NODE *op, int *error) {
     if(isinf(n1) && isinf(n2)) return 1;
     if(isnan(n1) || isnan(n2)) return 0;
     if(isinf(n1) || isinf(n2)) return 0;
-    return n1 == n2;
+    return calculated_number_equal(n1, n2);
 }
 calculated_number eval_not_equal(EVAL_EXPRESSION *exp, EVAL_NODE *op, int *error) {
     return !eval_equal(exp, op, error);
@@ -362,7 +347,6 @@ static inline calculated_number eval_node(EVAL_EXPRESSION *exp, EVAL_NODE *op, i
 
     calculated_number n = operators[op->operator].eval(exp, op, error);
 
-    // return eval_check_number(n, error);
     return n;
 }
 
@@ -371,7 +355,7 @@ static inline calculated_number eval_node(EVAL_EXPRESSION *exp, EVAL_NODE *op, i
 
 static inline void print_parsed_as_variable(BUFFER *out, EVAL_VARIABLE *v, int *error) {
     (void)error;
-    buffer_sprintf(out, "$%s", v->name);
+    buffer_sprintf(out, "${%s}", v->name);
 }
 
 static inline void print_parsed_as_constant(BUFFER *out, calculated_number n) {
@@ -719,17 +703,31 @@ static inline int parse_variable(const char **string, char *buffer, size_t len) 
     const char *s = *string;
 
     // $
-    if(s[0] == '$') {
+    if(*s == '$') {
         size_t i = 0;
         s++;
 
-        while(*s && !isvariableterm(*s) && i < len)
-            buffer[i++] = *s++;
+        if(*s == '{') {
+            // ${variable_name}
+
+            s++;
+            while (*s && *s != '}' && i < len)
+                buffer[i++] = *s++;
+
+            if(*s == '}')
+                s++;
+        }
+        else {
+            // $variable_name
+
+            while (*s && !isvariableterm(*s) && i < len)
+                buffer[i++] = *s++;
+        }
 
         buffer[i] = '\0';
 
-        if(buffer[0]) {
-            *string = &s[0];
+        if (buffer[0]) {
+            *string = s;
             return 1;
         }
     }
@@ -739,7 +737,7 @@ static inline int parse_variable(const char **string, char *buffer, size_t len) 
 
 static inline int parse_constant(const char **string, calculated_number *number) {
     char *end = NULL;
-    calculated_number n = strtold(*string, &end);
+    calculated_number n = str2ld(*string, &end);
     if(unlikely(!end || *string == end)) {
         *number = 0;
         return 0;
@@ -1047,9 +1045,7 @@ static inline EVAL_NODE *parse_rest_of_expression(const char **string, int *erro
 
 // high level function to parse an expression or a sub-expression
 static inline EVAL_NODE *parse_full_expression(const char **string, int *error) {
-    EVAL_NODE *op1 = NULL;
-
-    op1 = parse_one_full_operand(string, error);
+    EVAL_NODE *op1 = parse_one_full_operand(string, error);
     if(!op1) {
         *error = EVAL_ERROR_MISSING_OPERAND;
         return NULL;
@@ -1067,8 +1063,19 @@ int expression_evaluate(EVAL_EXPRESSION *exp) {
     buffer_reset(exp->error_msg);
     exp->result = eval_node(exp, (EVAL_NODE *)exp->nodes, &exp->error);
 
-    if(exp->error == EVAL_ERROR_OK)
-        exp->result = eval_check_number(exp->result, &exp->error);
+    if(unlikely(isnan(exp->result))) {
+        if(exp->error == EVAL_ERROR_OK)
+            exp->error = EVAL_ERROR_VALUE_IS_NAN;
+    }
+    else if(unlikely(isinf(exp->result))) {
+        if(exp->error == EVAL_ERROR_OK)
+            exp->error = EVAL_ERROR_VALUE_IS_INFINITE;
+    }
+    else if(unlikely(exp->error == EVAL_ERROR_UNKNOWN_VARIABLE)) {
+        // although there is an unknown variable
+        // the expression was evaluated successfully
+        exp->error = EVAL_ERROR_OK;
+    }
 
     if(exp->error != EVAL_ERROR_OK) {
         exp->result = NAN;
@@ -1086,7 +1093,6 @@ int expression_evaluate(EVAL_EXPRESSION *exp) {
 EVAL_EXPRESSION *expression_parse(const char *string, const char **failed_at, int *error) {
     const char *s = string;
     int err = EVAL_ERROR_OK;
-    unsigned long pos = 0;
 
     EVAL_NODE *op = parse_full_expression(&s, &err);
 
@@ -1102,7 +1108,7 @@ EVAL_EXPRESSION *expression_parse(const char *string, const char **failed_at, in
     if (error) *error = err;
 
     if(!op) {
-        pos = s - string + 1;
+        unsigned long pos = s - string + 1;
         error("failed to parse expression '%s': %s at character %lu (i.e.: '%s').", string, expression_strerror(err), pos, s);
         return NULL;
     }

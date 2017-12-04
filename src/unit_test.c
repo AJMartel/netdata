@@ -1,5 +1,62 @@
 #include "common.h"
 
+static int check_rrdcalc_comparisons(void) {
+    RRDCALC_STATUS a, b;
+
+    // make sure calloc() sets the status to UNINITIALIZED
+    memset(&a, 0, sizeof(RRDCALC_STATUS));
+    if(a != RRDCALC_STATUS_UNINITIALIZED) {
+        fprintf(stderr, "%s is not zero.\n", rrdcalc_status2string(RRDCALC_STATUS_UNINITIALIZED));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_REMOVED;
+    b = RRDCALC_STATUS_UNDEFINED;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_UNDEFINED;
+    b = RRDCALC_STATUS_UNINITIALIZED;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_UNINITIALIZED;
+    b = RRDCALC_STATUS_CLEAR;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_CLEAR;
+    b = RRDCALC_STATUS_RAISED;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_RAISED;
+    b = RRDCALC_STATUS_WARNING;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_WARNING;
+    b = RRDCALC_STATUS_CRITICAL;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    fprintf(stderr, "RRDCALC_STATUSes are sortable.\n");
+
+    return 0;
+}
+
 int check_storage_number(calculated_number n, int debug) {
     char buffer[100];
     uint32_t flags = SN_EXISTS;
@@ -17,8 +74,8 @@ int check_storage_number(calculated_number n, int debug) {
 
     if(dcdiff < 0) dcdiff = -dcdiff;
 
-    size_t len = print_calculated_number(buffer, d);
-    calculated_number p = strtold(buffer, NULL);
+    size_t len = (size_t)print_calculated_number(buffer, d);
+    calculated_number p = str2ld(buffer, NULL);
     calculated_number pdiff = n - p;
     calculated_number pcdiff = pdiff * 100.0 / n;
     if(pcdiff < 0) pcdiff = -pcdiff;
@@ -31,8 +88,8 @@ int check_storage_number(calculated_number n, int debug) {
             CALCULATED_NUMBER_FORMAT " re-parsed from printed (diff " CALCULATED_NUMBER_FORMAT ", " CALCULATED_NUMBER_FORMAT "%%)\n\n",
             n,
             d, s, ddiff, dcdiff,
-            buffer,
-            len, p, pdiff, pcdiff
+            buffer, len,
+            p, pdiff, pcdiff
         );
         if(len != strlen(buffer)) fprintf(stderr, "ERROR: printed number %s is reported to have length %zu but it has %zu\n", buffer, len, strlen(buffer));
         if(dcdiff > ACCURACY_LOSS) fprintf(stderr, "WARNING: packing number " CALCULATED_NUMBER_FORMAT " has accuracy loss %0.7Lf %%\n", n, dcdiff);
@@ -43,6 +100,19 @@ int check_storage_number(calculated_number n, int debug) {
     if(dcdiff > ACCURACY_LOSS) return 3;
     if(pcdiff > ACCURACY_LOSS) return 4;
     return 0;
+}
+
+calculated_number storage_number_min(calculated_number n) {
+    calculated_number r = 1, last;
+
+    do {
+        last = n;
+        n /= 2.0;
+        storage_number t = pack_storage_number(n, SN_EXISTS);
+        r = unpack_storage_number(t);
+    } while(r != 0.0 && r != last);
+
+    return last;
 }
 
 void benchmark_storage_number(int loop, int multiplier) {
@@ -73,10 +143,10 @@ void benchmark_storage_number(int loop, int multiplier) {
     }
 
     fprintf(stderr, "\nNETDATA FLOATING POINT\n");
-    fprintf(stderr, "MIN POSITIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_POSITIVE_MIN);
+    fprintf(stderr, "MIN POSITIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", storage_number_min(1));
     fprintf(stderr, "MAX POSITIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_POSITIVE_MAX);
     fprintf(stderr, "MIN NEGATIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_NEGATIVE_MIN);
-    fprintf(stderr, "MAX NEGATIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_NEGATIVE_MAX);
+    fprintf(stderr, "MAX NEGATIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", -storage_number_min(1));
     fprintf(stderr, "Maximum accuracy loss: " CALCULATED_NUMBER_FORMAT "%%\n\n\n", (calculated_number)ACCURACY_LOSS);
 
     // ------------------------------------------------------------------------
@@ -229,6 +299,75 @@ int unit_test_storage()
     return r;
 }
 
+int unit_test_str2ld() {
+    char *values[] = {
+            "1.2345678", "-35.6", "0.00123", "23842384234234.2", ".1", "1.2e-10",
+            "hello", "1wrong", "nan", "inf", NULL
+    };
+
+    int i;
+    for(i = 0; values[i] ; i++) {
+        char *e_mine = "hello", *e_sys = "world";
+        long double mine = str2ld(values[i], &e_mine);
+        long double sys = strtold(values[i], &e_sys);
+
+        if(isnan(mine)) {
+            if(!isnan(sys)) {
+                fprintf(stderr, "Value '%s' is parsed as %Lf, but system believes it is %Lf.\n", values[i], mine, sys);
+                return -1;
+            }
+        }
+        else if(isinf(mine)) {
+            if(!isinf(sys)) {
+                fprintf(stderr, "Value '%s' is parsed as %Lf, but system believes it is %Lf.\n", values[i], mine, sys);
+                return -1;
+            }
+        }
+        else if(mine != sys && abs(mine-sys) > 0.000001) {
+            fprintf(stderr, "Value '%s' is parsed as %Lf, but system believes it is %Lf, delta %Lf.\n", values[i], mine, sys, sys-mine);
+            return -1;
+        }
+
+        if(e_mine != e_sys) {
+            fprintf(stderr, "Value '%s' is parsed correctly, but endptr is not right\n", values[i]);
+            return -1;
+        }
+
+        fprintf(stderr, "str2ld() parsed value '%s' exactly the same way with strtold(), returned %Lf vs %Lf\n", values[i], mine, sys);
+    }
+
+    return 0;
+}
+
+int unit_test_buffer() {
+    BUFFER *wb = buffer_create(1);
+    char string[2048 + 1];
+    char final[9000 + 1];
+    int i;
+
+    for(i = 0; i < 2048; i++)
+        string[i] = (char)((i % 24) + 'a');
+    string[2048] = '\0';
+
+    const char *fmt = "string1: %s\nstring2: %s\nstring3: %s\nstring4: %s";
+    buffer_sprintf(wb, fmt, string, string, string, string);
+    snprintfz(final, 9000, fmt, string, string, string, string);
+
+    const char *s = buffer_tostring(wb);
+
+    if(buffer_strlen(wb) != strlen(final) || strcmp(s, final) != 0) {
+        fprintf(stderr, "\nbuffer_sprintf() is faulty.\n");
+        fprintf(stderr, "\nstring  : %s (length %zu)\n", string, strlen(string));
+        fprintf(stderr, "\nbuffer  : %s (length %zu)\n", s, buffer_strlen(wb));
+        fprintf(stderr, "\nexpected: %s (length %zu)\n", final, strlen(final));
+        buffer_free(wb);
+        return -1;
+    }
+
+    fprintf(stderr, "buffer_sprintf() works as expected.\n");
+    buffer_free(wb);
+    return 0;
+}
 
 // --------------------------------------------------------------------------------------------------------------------
 
@@ -244,7 +383,7 @@ struct test {
     int update_every;
     unsigned long long multiplier;
     unsigned long long divisor;
-    int algorithm;
+    RRD_ALGORITHM algorithm;
 
     unsigned long feed_entries;
     unsigned long result_entries;
@@ -282,7 +421,7 @@ struct test test1 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_ABSOLUTE,    // algorithm
+        RRD_ALGORITHM_ABSOLUTE,    // algorithm
         10,                 // feed entries
         9,                  // result entries
         test1_feed,         // feed
@@ -318,7 +457,7 @@ struct test test2 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_ABSOLUTE,    // algorithm
+        RRD_ALGORITHM_ABSOLUTE,    // algorithm
         10,                 // feed entries
         9,                  // result entries
         test2_feed,         // feed
@@ -353,7 +492,7 @@ struct test test3 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         9,                  // result entries
         test3_feed,         // feed
@@ -388,7 +527,7 @@ struct test test4 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         9,                  // result entries
         test4_feed,         // feed
@@ -423,7 +562,7 @@ struct test test5 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         9,                  // result entries
         test5_feed,         // feed
@@ -464,7 +603,7 @@ struct test test6 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         16,                 // feed entries
         4,                  // result entries
         test6_feed,         // feed
@@ -499,7 +638,7 @@ struct test test7 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         18,                 // result entries
         test7_feed,         // feed
@@ -530,7 +669,7 @@ struct test test8 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_ABSOLUTE,    // algorithm
+        RRD_ALGORITHM_ABSOLUTE,    // algorithm
         6,                  // feed entries
         10,                 // result entries
         test8_feed,         // feed
@@ -571,7 +710,7 @@ struct test test9 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_ABSOLUTE,    // algorithm
+        RRD_ALGORITHM_ABSOLUTE,    // algorithm
         16,                 // feed entries
         4,                  // result entries
         test9_feed,         // feed
@@ -606,7 +745,7 @@ struct test test10 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         7,                  // result entries
         test10_feed,        // feed
@@ -649,7 +788,7 @@ struct test test11 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_PCENT_OVER_DIFF_TOTAL,   // algorithm
+        RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL,   // algorithm
         10,                 // feed entries
         9,                  // result entries
         test11_feed,        // feed
@@ -692,7 +831,7 @@ struct test test12 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_PCENT_OVER_DIFF_TOTAL,   // algorithm
+        RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL,   // algorithm
         10,                 // feed entries
         9,                  // result entries
         test12_feed,        // feed
@@ -727,7 +866,7 @@ struct test test13 = {
         1,                  // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_PCENT_OVER_DIFF_TOTAL,   // algorithm
+        RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL,   // algorithm
         10,                 // feed entries
         7,                  // result entries
         test13_feed,        // feed
@@ -762,7 +901,7 @@ struct test test14 = {
         30,                 // update_every
         8,                  // multiplier
         1000000000,         // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         8,                  // result entries
         test14_feed,        // feed
@@ -794,7 +933,7 @@ struct test test14b = {
         30,                 // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         8,                  // result entries
         test14b_feed,        // feed
@@ -826,7 +965,7 @@ struct test test14c = {
         30,                 // update_every
         1,                  // multiplier
         1,                  // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         9,                  // result entries
         test14c_feed,        // feed
@@ -869,7 +1008,7 @@ struct test test15 = {
         1,                  // update_every
         8,                  // multiplier
         1024,               // divisor
-        RRDDIM_INCREMENTAL, // algorithm
+        RRD_ALGORITHM_INCREMENTAL, // algorithm
         10,                 // feed entries
         9,                  // result entries
         test15_feed,        // feed
@@ -884,24 +1023,25 @@ int run_test(struct test *test)
 {
     fprintf(stderr, "\nRunning test '%s':\n%s\n", test->name, test->description);
 
-    rrd_memory_mode = RRD_MEMORY_MODE_RAM;
-    rrd_update_every = test->update_every;
+    default_rrd_memory_mode = RRD_MEMORY_MODE_ALLOC;
+    default_rrd_update_every = test->update_every;
 
     char name[101];
     snprintfz(name, 100, "unittest-%s", test->name);
 
     // create the chart
-    RRDSET *st = rrdset_create("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", 1, test->update_every, RRDSET_TYPE_LINE);
+    RRDSET *st = rrdset_create_localhost("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", "unittest", NULL, 1
+                                         , test->update_every, RRDSET_TYPE_LINE);
     RRDDIM *rd = rrddim_add(st, "dim1", NULL, test->multiplier, test->divisor, test->algorithm);
     
     RRDDIM *rd2 = NULL;
     if(test->feed2)
         rd2 = rrddim_add(st, "dim2", NULL, test->multiplier, test->divisor, test->algorithm);
 
-    st->debug = 1;
+    rrdset_flag_set(st, RRDSET_FLAG_DEBUG);
 
     // feed it with the test data
-    time_t time_now = 0, time_start = time(NULL);
+    time_t time_now = 0, time_start = now_realtime_sec();
     unsigned long c;
     collected_number last = 0;
     for(c = 0; c < test->feed_entries; c++) {
@@ -915,7 +1055,9 @@ int run_test(struct test *test)
                 (float)time_now / 1000000.0,
                 ((calculated_number)test->feed[c].value - (calculated_number)last) * (calculated_number)test->multiplier / (calculated_number)test->divisor,
                 (((calculated_number)test->feed[c].value - (calculated_number)last) * (calculated_number)test->multiplier / (calculated_number)test->divisor) / (calculated_number)test->feed[c].microseconds * (calculated_number)1000000);
-            rrdset_next_usec_unfiltered(st, test->feed[c].microseconds);
+
+            // rrdset_next_usec_unfiltered(st, test->feed[c].microseconds);
+            st->usec_since_last_update = test->feed[c].microseconds;
         }
         else {
             fprintf(stderr, "    > %s: feeding position %lu\n", test->name, c+1);
@@ -952,7 +1094,7 @@ int run_test(struct test *test)
     for(c = 0 ; c < max ; c++) {
         calculated_number v = unpack_storage_number(rd->values[c]);
         calculated_number n = test->results[c];
-        int same = (roundl(v * 10000000.0) == roundl(n * 10000000.0))?1:0;
+        int same = (calculated_number_round(v * 10000000.0) == calculated_number_round(n * 10000000.0))?1:0;
         fprintf(stderr, "    %s/%s: checking position %lu (at %lu secs), expecting value " CALCULATED_NUMBER_FORMAT ", found " CALCULATED_NUMBER_FORMAT ", %s\n",
             test->name, rd->name, c+1,
             (rrdset_first_entry_t(st) + c * st->update_every) - time_start,
@@ -963,7 +1105,7 @@ int run_test(struct test *test)
         if(rd2) {
             v = unpack_storage_number(rd2->values[c]);
             n = test->results2[c];
-            same = (roundl(v * 10000000.0) == roundl(n * 10000000.0))?1:0;
+            same = (calculated_number_round(v * 10000000.0) == calculated_number_round(n * 10000000.0))?1:0;
             fprintf(stderr, "    %s/%s: checking position %lu (at %lu secs), expecting value " CALCULATED_NUMBER_FORMAT ", found " CALCULATED_NUMBER_FORMAT ", %s\n",
                 test->name, rd2->name, c+1,
                 (rrdset_first_entry_t(st) + c * st->update_every) - time_start,
@@ -975,8 +1117,58 @@ int run_test(struct test *test)
     return errors;
 }
 
+static int test_variable_renames(void) {
+    fprintf(stderr, "Creating chart\n");
+    RRDSET *st = rrdset_create_localhost("chart", "ID", NULL, "family", "context", "Unit Testing", "a value", "unittest", NULL, 1, 1, RRDSET_TYPE_LINE);
+    fprintf(stderr, "Created chart with id '%s', name '%s'\n", st->id, st->name);
+
+    fprintf(stderr, "Creating dimension DIM1\n");
+    RRDDIM *rd1 = rrddim_add(st, "DIM1", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+    fprintf(stderr, "Created dimension with id '%s', name '%s'\n", rd1->id, rd1->name);
+
+    fprintf(stderr, "Creating dimension DIM2\n");
+    RRDDIM *rd2 = rrddim_add(st, "DIM2", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+    fprintf(stderr, "Created dimension with id '%s', name '%s'\n", rd2->id, rd2->name);
+
+    fprintf(stderr, "Renaming chart to CHARTNAME1\n");
+    rrdset_set_name(st, "CHARTNAME1");
+    fprintf(stderr, "Renamed chart with id '%s' to name '%s'\n", st->id, st->name);
+
+    fprintf(stderr, "Renaming chart to CHARTNAME2\n");
+    rrdset_set_name(st, "CHARTNAME2");
+    fprintf(stderr, "Renamed chart with id '%s' to name '%s'\n", st->id, st->name);
+
+    fprintf(stderr, "Renaming dimension DIM1 to DIM1NAME1\n");
+    rrddim_set_name(st, rd1, "DIM1NAME1");
+    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rd1->id, rd1->name);
+
+    fprintf(stderr, "Renaming dimension DIM1 to DIM1NAME2\n");
+    rrddim_set_name(st, rd1, "DIM1NAME2");
+    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rd1->id, rd1->name);
+
+    fprintf(stderr, "Renaming dimension DIM2 to DIM2NAME1\n");
+    rrddim_set_name(st, rd2, "DIM2NAME1");
+    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rd2->id, rd2->name);
+
+    fprintf(stderr, "Renaming dimension DIM2 to DIM2NAME2\n");
+    rrddim_set_name(st, rd2, "DIM2NAME2");
+    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rd2->id, rd2->name);
+
+    BUFFER *buf = buffer_create(1);
+    health_api_v1_chart_variables2json(st, buf);
+    fprintf(stderr, "%s", buffer_tostring(buf));
+    buffer_free(buf);
+    return 1;
+}
+
 int run_all_mockup_tests(void)
 {
+    if(check_rrdcalc_comparisons())
+        return 1;
+
+    if(!test_variable_renames())
+        return 1;
+
     if(run_test(&test1))
         return 1;
 
@@ -1028,6 +1220,8 @@ int run_all_mockup_tests(void)
     if(run_test(&test15))
         return 1;
 
+
+
     return 0;
 }
 
@@ -1040,26 +1234,27 @@ int unit_test(long delay, long shift)
     snprintfz(name, 100, "unittest-%d-%ld-%ld", repeat, delay, shift);
 
     //debug_flags = 0xffffffff;
-    rrd_memory_mode = RRD_MEMORY_MODE_RAM;
-    rrd_update_every = 1;
+    default_rrd_memory_mode = RRD_MEMORY_MODE_ALLOC;
+    default_rrd_update_every = 1;
 
     int do_abs = 1;
     int do_inc = 1;
     int do_abst = 0;
     int do_absi = 0;
 
-    RRDSET *st = rrdset_create("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", 1, 1, RRDSET_TYPE_LINE);
-    st->debug = 1;
+    RRDSET *st = rrdset_create_localhost("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", "unittest", NULL, 1, 1
+                                         , RRDSET_TYPE_LINE);
+    rrdset_flag_set(st, RRDSET_FLAG_DEBUG);
 
     RRDDIM *rdabs = NULL;
     RRDDIM *rdinc = NULL;
     RRDDIM *rdabst = NULL;
     RRDDIM *rdabsi = NULL;
 
-    if(do_abs) rdabs = rrddim_add(st, "absolute", "absolute", 1, 1, RRDDIM_ABSOLUTE);
-    if(do_inc) rdinc = rrddim_add(st, "incremental", "incremental", 1, 1, RRDDIM_INCREMENTAL);
-    if(do_abst) rdabst = rrddim_add(st, "percentage-of-absolute-row", "percentage-of-absolute-row", 1, 1, RRDDIM_PCENT_OVER_ROW_TOTAL);
-    if(do_absi) rdabsi = rrddim_add(st, "percentage-of-incremental-row", "percentage-of-incremental-row", 1, 1, RRDDIM_PCENT_OVER_DIFF_TOTAL);
+    if(do_abs) rdabs = rrddim_add(st, "absolute", "absolute", 1, 1, RRD_ALGORITHM_ABSOLUTE);
+    if(do_inc) rdinc = rrddim_add(st, "incremental", "incremental", 1, 1, RRD_ALGORITHM_INCREMENTAL);
+    if(do_abst) rdabst = rrddim_add(st, "percentage-of-absolute-row", "percentage-of-absolute-row", 1, 1, RRD_ALGORITHM_PCENT_OVER_ROW_TOTAL);
+    if(do_absi) rdabsi = rrddim_add(st, "percentage-of-incremental-row", "percentage-of-incremental-row", 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
 
     long increment = 1000;
     collected_number i = 0;
@@ -1073,7 +1268,8 @@ int unit_test(long delay, long shift)
 
         fprintf(stderr, "\n\nLOOP = %lu, DELAY = %ld, VALUE = " COLLECTED_NUMBER_FORMAT "\n", c, delay, i);
         if(c) {
-            rrdset_next_usec_unfiltered(st, delay);
+            // rrdset_next_usec_unfiltered(st, delay);
+            st->usec_since_last_update = delay;
         }
         if(do_abs) rrddim_set(st, "absolute", i);
         if(do_inc) rrddim_set(st, "incremental", i);
@@ -1081,7 +1277,7 @@ int unit_test(long delay, long shift)
         if(do_absi) rrddim_set(st, "percentage-of-incremental-row", i);
 
         if(!c) {
-            gettimeofday(&st->last_collected_time, NULL);
+            now_realtime_timeval(&st->last_collected_time);
             st->last_collected_time.tv_usec = shift;
         }
 

@@ -14,6 +14,13 @@ typedef long double collected_number;
 #define COLLECTED_NUMBER_FORMAT "%0.7Lf"
 */
 
+#define calculated_number_llrint(x) llrintl(x)
+#define calculated_number_round(x) roundl(x)
+#define calculated_number_fabs(x) fabsl(x)
+#define calculated_number_epsilon (calculated_number)0.0000001
+
+#define calculated_number_equal(a, b) (calculated_number_fabs((a) - (b)) < calculated_number_epsilon)
+
 typedef uint32_t storage_number;
 #define STORAGE_NUMBER_FORMAT "%u"
 
@@ -28,7 +35,8 @@ typedef uint32_t storage_number;
 #define SN_FLAGS_MASK       (~(0x6 << 24))
 
 // extract the flags
-#define get_storage_number_flags(value) ((((storage_number)value) & (1 << 24)) | (((storage_number)value) & (2 << 24)) | (((storage_number)value) & (4 << 24)))
+#define get_storage_number_flags(value) ((((storage_number)(value)) & (1 << 24)) | (((storage_number)(value)) & (2 << 24)) | (((storage_number)(value)) & (4 << 24)))
+#define SN_EMPTY_SLOT 0x00000000
 
 // checks
 #define does_storage_number_exist(value) ((get_storage_number_flags(value) != 0)?1:0)
@@ -39,13 +47,13 @@ calculated_number unpack_storage_number(storage_number value);
 
 int print_calculated_number(char *str, calculated_number value);
 
-#define STORAGE_NUMBER_POSITIVE_MAX 167772150000000.0
-#define STORAGE_NUMBER_POSITIVE_MIN 0.00001
-#define STORAGE_NUMBER_NEGATIVE_MAX -0.00001
-#define STORAGE_NUMBER_NEGATIVE_MIN -167772150000000.0
+#define STORAGE_NUMBER_POSITIVE_MAX (167772150000000.0)
+#define STORAGE_NUMBER_POSITIVE_MIN (0.0000001)
+#define STORAGE_NUMBER_NEGATIVE_MAX (-0.0000001)
+#define STORAGE_NUMBER_NEGATIVE_MIN (-167772150000000.0)
 
 // accepted accuracy loss
 #define ACCURACY_LOSS 0.0001
-#define accuracy_loss(t1, t2) ((t1 == t2 || t1 == 0.0 || t2 == 0.0) ? 0.0 : (100.0 - ((t1 > t2) ? (t2 * 100.0 / t1 ) : (t1 * 100.0 / t2))))
+#define accuracy_loss(t1, t2) (((t1) == (t2) || (t1) == 0.0 || (t2) == 0.0) ? 0.0 : (100.0 - (((t1) > (t2)) ? ((t2) * 100.0 / (t1) ) : ((t1) * 100.0 / (t2)))))
 
 #endif /* NETDATA_STORAGE_NUMBER_H */
